@@ -9,6 +9,8 @@
 #include <OLEDDisplayUi.h>
 #include <SSD1306.h>
 #include <SSD1306Wire.h>
+// include IR Lib
+#include <esp32_rmt.h>
 // Rotary Encoder Lib
 #include <ky-040.h>
 
@@ -19,7 +21,8 @@ const char* mqttServer = "mqtt.server.local";
 const int   mqttPort = 8883;
 const char* mqttUser = "mqttuserName";
 const char* mqttPassword = "mqttpassw0rd";
-const char* mqttDeviceName = "DeviceName";
+const char* mqttDeviceName = "Panel-";
+byte mac[6];
 
 // Initialize the OLED display using Wire library
 SSD1306  display(0x3c, 5, 4);
@@ -36,6 +39,10 @@ PubSubClient client(mqttServer, mqttPort, wifiClientSecure);
 #define ROTARY_ID1           0      // Ids can range from 0 to 254, 255 is reserved
 ky040 encoder1(ENCODER_CLK1, ENCODER_DT1, ENCODER_SW1, MAX_ROTARIES1 );
 
+// Init IR
+ESP32_RMT rem1, rem2;
+uint8_t cnt;
+uint16_t cmd, addr;
 
 void setup() {
   // put your setup code here, to run once:
@@ -50,7 +57,7 @@ void setup() {
   client.setServer(mqttServer, mqttPort);
   client.setCallback(callback);
   while (!client.connected()) {
-     if (client.connect(mqttDeviceName, mqttUser, mqttPassword )) {
+     if (client.connect(mqttDeviceName + mac[3] + mac[4] + mac[5], mqttUser, mqttPassword )) {
      } else {
        delay(1000);
      }
@@ -60,17 +67,35 @@ void setup() {
   encoder1.AddRotaryCounter(ROTARY_ID1, 10, -100, 100, 1, true );
   encoder1.SetRotary(ROTARY_ID1);
   encoder1.SetChanged(ROTARY_ID1); // This way we can force an update the first time through
+  // Init IR
+  rem1.begin(17,1);
+  rem2.begin(16,1);
 }
 
 void loop() {
   // put your main code here, to run repeatedly:
   // MQTT Loop
   client.loop();
+
+  // ir transmit loop
+  if(Serial.available()>0)
+     {
+        switch(Serial.read())
+        {
+          case '0': Serial.println("power"); rem2.necSend(0x3000, 0xfd02); break;
+          case '1': Serial.println("volume up"); rem2.necSend(0x3000, 0x7d82); break;
+          case '2': Serial.println("volume down"); rem2.necSend(0x3000, 0x7c83); break;
+          default: break;
+        }
+      
+     }
+  
 }
 
 void initWiFi() {
   if (strcmp (WiFi.SSID().c_str(), ssid) != 0) {
    WiFi.begin(ssid, password);
+   WiFi.macAddress(mac);
  }
  while (WiFi.status() != WL_CONNECTED) {
    delay(500);
