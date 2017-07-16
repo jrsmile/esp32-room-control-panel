@@ -1,28 +1,27 @@
 // WIFI Client Lib
-#include <ssl_client.h>
 #include <WiFiClientSecure.h>
 // MQTT Lib
 #include <PubSubClient.h>
 // OLED Display
-#include <OLEDDisplay.h>
-#include <OLEDDisplayFonts.h>
-#include <OLEDDisplayUi.h>
 #include <SSD1306.h>
-#include <SSD1306Wire.h>
 // include IR Lib
 #include <esp32_rmt.h>
-// Rotary Encoder Lib
-#include <ky-040.h>
+
+
+// Include Images
+#include "images.h"
+//#include "bat.h"
 
 //-------- Customise these values -----------
-const char* ssid = "uberssid";
-const char* password = "securewlanpass";
-const char* mqttServer = "mqtt.server.local";
+const char* ssid = "ubserssid";
+const char* password = "passw0rd";
+const char* mqttServer = "172.16.1.10";
 const int   mqttPort = 8883;
-const char* mqttUser = "mqttuserName";
-const char* mqttPassword = "mqttpassw0rd";
-const char* mqttDeviceName = "Panel-";
+const char* mqttUser = "iot";
+const char* mqttPassword = "passw0rd";
 byte mac[6];
+boolean bRFlag, bLFlag;
+boolean bRTrig, bLTrig;
 
 // Initialize the OLED display using Wire library
 SSD1306  display(0x3c, 5, 4);
@@ -31,13 +30,10 @@ WiFiClientSecure wifiClientSecure;
 // Init MQTT
 PubSubClient client(mqttServer, mqttPort, wifiClientSecure);
 // Init Encoder
-#define ENCODER_CLK1         2      // This pin must have a minimum 0.47 uF capacitor
-                                    // The current library only allows pins 2 or 3
-#define ENCODER_DT1         12      // data pin
-#define ENCODER_SW1         11      // switch pin (active LOW)
-#define MAX_ROTARIES1        1      // this example define two rotaries for this encoder
-#define ROTARY_ID1           0      // Ids can range from 0 to 254, 255 is reserved
-ky040 encoder1(ENCODER_CLK1, ENCODER_DT1, ENCODER_SW1, MAX_ROTARIES1 );
+byte interruptPin1 = 25;
+byte interruptPin2 = 26;
+byte interruptPin3 = 36;
+volatile byte state = LOW;
 
 // Init IR
 ESP32_RMT rem1, rem2;
@@ -46,30 +42,61 @@ uint16_t cmd, addr;
 
 void setup() {
   // put your setup code here, to run once:
+  // Init Serial
+  Serial.begin(115200);
+  delay(100);
+  Serial.println("Serial init...");
   // Init Display
+  Serial.println("Display init...");
   display.init();
   display.flipScreenVertically();
   display.setFont(ArialMT_Plain_10);
+  display.clear();
   display.setTextAlignment(TEXT_ALIGN_LEFT);
+  display.setFont(ArialMT_Plain_16);
+  display.drawString(0, 0, "Hallo Jan");
+  display.setFont(ArialMT_Plain_16);
+  display.drawString(0, 16, "es klappt");
+  display.setFont(ArialMT_Plain_16);
+  display.drawString(0, 32, "Juhuuuu");
+  display.setFont(ArialMT_Plain_16);
+  display.drawString(0, 48, "Zeile 4");
+
+  display.display();
   // Init WIFI
+  Serial.println("Wifi init...");
   initWiFi();
   // Init MQTT
+  Serial.println("MQTT init...");
   client.setServer(mqttServer, mqttPort);
   client.setCallback(callback);
+  Serial.print("Connecting...");
+  char data[13];
+  sprintf(data, "Panel-%.2x%.2x%.2x", mac[3], mac[4], mac[5]);
   while (!client.connected()) {
-     if (client.connect(mqttDeviceName + mac[3] + mac[4] + mac[5], mqttUser, mqttPassword )) {
-     } else {
-       delay(1000);
-     }
+    if (client.connect(data, mqttUser, mqttPassword )) {
+    } else {
+      Serial.print(".");
+      delay(500);
+    }
   }
+  Serial.println("");
+  Serial.println("Subscribing...");
   client.subscribe("test");
+  client.publish("esp32", data);
   // Init Rotary
-  encoder1.AddRotaryCounter(ROTARY_ID1, 10, -100, 100, 1, true );
-  encoder1.SetRotary(ROTARY_ID1);
-  encoder1.SetChanged(ROTARY_ID1); // This way we can force an update the first time through
+  Serial.println("Encoder init...");
+  pinMode(interruptPin1, INPUT_PULLUP);
+  attachInterrupt(digitalPinToInterrupt(interruptPin1), int_25, CHANGE);
+  pinMode(interruptPin2, INPUT_PULLUP);
+  attachInterrupt(digitalPinToInterrupt(interruptPin2), int_26, CHANGE);
+  pinMode(interruptPin3, INPUT_PULLUP);
+  attachInterrupt(digitalPinToInterrupt(interruptPin3), int_2, CHANGE);
   // Init IR
-  rem1.begin(17,1);
-  rem2.begin(16,1);
+  Serial.println("IR init...");
+  rem1.begin(17, 1);
+  rem2.begin(16, 1);
+  Serial.println("Loop init...");
 }
 
 void loop() {
@@ -78,41 +105,89 @@ void loop() {
   client.loop();
 
   // ir transmit loop
-  if(Serial.available()>0)
-     {
-        switch(Serial.read())
-        {
-          case '0': Serial.println("power"); rem2.necSend(0x3000, 0xfd02); break;
-          case '1': Serial.println("volume up"); rem2.necSend(0x3000, 0x7d82); break;
-          case '2': Serial.println("volume down"); rem2.necSend(0x3000, 0x7c83); break;
-          default: break;
-        }
-      
-     }
-  
+  if (Serial.available() > 0)
+  {
+    switch (Serial.read())
+    {
+      case '0': Serial.println("power"); rem2.necSend(0x3000, 0xfd02); break;
+      case '1': Serial.println("volume up"); rem2.necSend(0x3000, 0x7d82); break;
+      case '2': Serial.println("volume down"); rem2.necSend(0x3000, 0x7c83); break;
+      default: break;
+    }
+
+  }
+
+  // Encoder loop
+  if (bRTrig == true)
+  {
+    Serial.println("Int Rechts: ");
+    bRFlag = false;
+    bLFlag = false;
+    bRTrig = false;
+  }
+  if (bLTrig == true)
+  {
+    Serial.println("Int Links: ");
+    bRFlag = false;
+    bLFlag = false;
+    bLTrig = false;
+  }
+  // End Main Loop
 }
 
 void initWiFi() {
+  Serial.print("Attempting to connect to SSID: ");
+  Serial.println(ssid);
   if (strcmp (WiFi.SSID().c_str(), ssid) != 0) {
-   WiFi.begin(ssid, password);
-   WiFi.macAddress(mac);
- }
- while (WiFi.status() != WL_CONNECTED) {
-   delay(500);
- } 
+    Serial.println("Connecting...");
+    WiFi.begin(ssid, password);
+    WiFi.macAddress(mac);
+  }
+  while (WiFi.status() != WL_CONNECTED) {
+    Serial.print(".");
+    // wait 0.5 second for re-trying
+    delay(500);
+  }
+
+  Serial.print("Connected to ");
+  Serial.println(ssid);
 }
 
 void callback(char* topic, byte* payload, unsigned int length) {
- 
+
   Serial.print("Message arrived in topic: ");
   Serial.println(topic);
- 
+
   Serial.print("Message:");
   for (int i = 0; i < length; i++) {
     Serial.print((char)payload[i]);
   }
- 
+  display.clear();
+  display.setTextAlignment(TEXT_ALIGN_LEFT);
+  display.setFont(ArialMT_Plain_10);
+  display.drawString(0, 0, String((char *)payload));
+  display.display();
   Serial.println();
   Serial.println("-----------------------");
- 
+
+}
+
+void int_25() {
+  bRFlag = true;
+  if (bLFlag == true)
+  {
+    bRTrig = true;
+  }
+}
+
+void int_26() {
+  state = !state;
+  Serial.println("pressed!");
+}
+void int_2() {
+  bLFlag = true;
+  if (bRFlag == true)
+  {
+    bLTrig = true;
+  }
 }
